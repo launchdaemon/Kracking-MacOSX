@@ -1,0 +1,150 @@
+A Non Practical & Non Real World Intro to [K]racking for Mac OS X
+by psyba
+
+Introduction
+------------
+The point of this tutorial is to provide some really basic concepts of software cracking for the Mac OS X Operating System and the tools needed to do it.  In this tutorial we are going to build a simple program in C that takes one path upon entering a certain value (or say serial number), and another upon any other value.  We will then reverse engineer it so it always takes the path of that certain value no matter what we enter.  We will then apply a patch so the edit is set permanently.  I will then follow with a post discussion of why this tutorial will not work out of the box to crack a complex application.  That will be for a follow up tutorial, but for now, this is a good start.
+
+Prerequisites
+-------------
+    - Some Command Line Experience
+    - Some C Programming Experience
+    - Some Understanding of the Assembly Language
+
+Tools
+-----
+    - Mac OS X
+    - Developer Tools
+    - Programming Environment Manual for 32-Bit Implementations of the PowerPC Architecture
+         * Contains all the assembly instructions
+         * pdf of this is online from IBM and/or Motorola (32/64 bit version available as well)
+
+The Application
+---------------
+
+    /* Save this to a file
+       Go to file's directory with the terminal
+       Compile with "gcc myFile.c -o myProgram" */
+
+    int main(void) {
+         int inValue;
+         
+         printf("\nPlease Enter the Correct Number: ");
+         scanf("%d", &inValue);
+         
+         if(inValue == 411)
+              printf("\n   That is correct!\n\n");
+         else
+              printf("\n   That is wrong, sorry.\n\n");
+         
+         return 0;
+   
+    }
+
+The [K]rack
+-----------
+Even though we have the source code, we are going to attempt to crack the program pretending that we do not.  It is just there for reference.  To crack this application we are going to use a tool called gdb which is a very powerful command line debugger that comes with the Developer Tools.  We will use gdb to start looking at the code when we need to rather then trying to disassemble the entire application or blindly searching through the binary with a hex editor.
+
+Where we want to start looking is easy to guess.  Since it processes what to do with the value when we enter the value, the point of where it wants the input value would be the place to start.  Assuming we are in the directory of the compiled application, and the name of the application is myProgram, we would setup gdb to do this from the terminal with this command:
+
+    gdb myProgram
+
+Simple, huh?  You will see some welcome text, configuration settings, etc that can be ignored.  gdb is able to cause a program to drop from running mode into debugger mode at a given spot through a couple of ways, but since the program stalls while waiting for input, we really don't need to bother with the automated methods (it becomes crucial for cracking windowed applications however).  So lets get it running with this simple command:
+
+    run
+
+Even easier!  You will see more text about it starting up and what not, and then it will execute as normal and wait for your input when it gets at that point in the program.  At this point it is still in running mode waiting for input, so to start cracking we want to drop it into debugger mode by hitting "control + c".  You will see something like so:
+
+    Please Enter the Correct Number: ^C
+    Program received signal SIGINT, Interrupt.
+    0x9000ebc8 in read ()
+
+The 0x9000ebc8 is the address it stopped at and can differ.  read is the function it stopped at.  It could differ depending on where it was in the runtime loop for reading data when you dropped it into debugger mode.  Now what we want to do is a backtrace which list all the functions that where called to get at the point we are at.  The command for that is:
+
+    bt
+
+My print out was (remember addresses can be different):
+
+    #0  0x9000ebc8 in read ()
+    #1  0x9001bb24 in _sread ()
+    #2  0x9001b5e8 in __srefill ()
+    #3  0x900194ec in __svfscanf ()
+    #4  0x900620b8 in scanf ()
+    #5  0x00001d24 in main ()
+    #6  0x00001a1c in _start (argc=8136, argv=0xa0002068, envp=0xbffffe40) at /SourceCache/Csu/Csu-47/crt.c:267
+    #7  0x8fe1a58c in __dyld__dyld_start ()
+
+From looking at this we can see the function called to input data was scanf (because we know C, not because we saw the source of the program), and after the call to scanf, which was called in main, the input value will be processed.  So that means we only need to disassemble main and we are only concerned about what happens in main after the scanf.  The backtrace tells us the return address of the the function above it.  That address is 0x00001d24 for me from the call to scanf.  So lets disassemble main with this command:
+
+    disassemble main
+
+You will get a big dump of assembly for main.  We can cut it down some knowing that we are only concerned with the assembly at address 0x00001d24 and beyond (remember addresses can be different).  Every instruction on the dump has its address next to it, so find the address of where scanf will return for you in the assembly dump and you should have the following:
+
+    0x00001d24 <main+56>:   lwz     r0,64(r30)
+    0x00001d28 <main+60>:   cmpwi   cr7,r0,411
+    0x00001d2c <main+64>:   bne-    cr7,0x1d40 <main+84>
+    0x00001d30 <main+68>:   addis   r3,r31,0
+    0x00001d34 <main+72>:   addi    r3,r3,712
+    0x00001d38 <main+76>:   bl      0x1ee8 <dyld_stub_printf>
+    0x00001d3c <main+80>:   b       0x1d4c <main+96>
+    0x00001d40 <main+84>:   addis   r3,r31,0
+    0x00001d44 <main+88>:   addi    r3,r3,736
+    0x00001d48 <main+92>:   bl      0x1ee8 <dyld_stub_printf>
+    0x00001d4c <main+96>:   li      r0,0
+    0x00001d50 <main+100>:  mr      r3,r0
+    0x00001d54 <main+104>:  lwz     r1,0(r1)
+    0x00001d58 <main+108>:  lwz     r0,8(r1)
+    0x00001d5c <main+112>:  mtlr    r0
+    0x00001d60 <main+116>:  lmw     r30,-8(r1)
+    0x00001d64 <main+120>:  blr
+    End of assembler dump.
+
+Now that pdf I told you to get will explain all the assembly instructions.  I will pick out the needed instructions and briefly explain what they do to figure out this code.  If its confusing, refer to the pdf for detailed information on the instructions.  Now, the 1st instruction simply loads in what what scanf scanned in into register r0.  The second instruction compares it to 411, our correct value, and stores a variety of information into conditional register 7.  Part of that information is if it is equal or not.  The 3rd instruction looks at conditional register 7 and sees if it is was equal, and if it is not, to jump to <main+84> which, if it isn't equal, would be the false path.  If it is equal, the instruction is ignored and it will continue to the next instructions in line.  Those instructions setup the arguments for printf, call printf and then jump over the false path to finish main.
+
+There are multiple ways to crack this.  The easiest is to just squash that bne instruction into nothingness since the instruction does nothing if the value is 411.  Before we do this however, lets see what the machine language is for the bne instruction is because we will need to know what the value is to replace when we make the patch.  To do this we use the read memory command like so on the address of the bne instruction.  The address of the bne instruction for me is 0x00001d2c as seen in the assembly dump:
+
+    x/w 0x00001d2c
+
+This command gives us 0x409e0014 in return and that is the machine language of the bne instruction in hex.  To squash out the bne instruction we will use the nop instruction (no operation).  We first need to find out what this instruction looks like in machine language.  Going to that pdf I told you to get, it has the 32-bit encoding of nop which in hex is 0x60000000.  So we need to write the value 0x60000000 to address 0x00001d2c for my address to crack this application to always take the correct path:  
+
+    set {unsigned long}0x00001d2c=0x60000000
+
+Now if you disassemble main again, it will read from a cached disassembly.  To see the true instruction at address 0x00001d2c you can use the read memory command and output the memory as an instruction as follows for my address:
+
+    x/i 0x00001d2c
+
+You will then see that the instruction at that address is nop.  Since the program was halted way back in scanf, lets continue running the program and see what happens (you should be able to enter in a value, but it feeds off of the input buffer from gdb and takes that in as data instead of correctly waiting for you to enter a number).  Continue running with this command:
+
+    c
+
+It takes the correct path and in no place was 411 entered in.  We successfully cracked the application.  Now this doesn't modify the binary on your hard drive but only the binary running in memory.  Moving on we will patch the application.
+
+The Patch
+---------
+The patch is fairly simple and can be done using a command line tools as well.  We want to leave gdb up and running with the executable so open a new terminal window and navigate it to the directory with the executable.  Now we want to convert the entire executable to hex.  To do this we use this command:
+
+    xxd myProgram outFile.hex
+
+We can then load outFile.hex into TextEdit for easy search and replace.  We want to replace 0x409e0014 with 0x60000000 as we did in gdb.  Before we get started, please note the formatting of the hex in the file.  There is no 0x before a number and there is 4 digits before a space.  Your search entries need to match this.  Now, we can just search for 0x409e0014 to replace, and in this case, there is only one occurrence, but it is possible there could be more then one.  To handle that, since we still have gdb up and running, we can dump the entire function of main in hex from gdb to find out what the values around what we are searching for are to narrow it down to one.  From the disassembly we know that main is 124 bytes long.  To dump the entire function of main in hex we would use the command:
+
+    x/124b main
+
+We then have enough information to find the proper occurrence of what we are looking for down to one.  After you replace 0x409e0014 with 0x60000000 in the file, save it.  Back at the terminal where you made the hex from, we can use the same tool to convert it back with the following command:
+
+    xxd -r outFile.hex "myProgram [k]"
+
+The permissions will be messed up.  I set the mode of the cracked program to the following and it executed as expected always taking the correct path no matter the input:
+
+    chmod 0100 "myProgram [k]"
+
+Post Discussion
+---------------
+This introduces you to some techniques and tools needed for some form of cracking or reverse engineering, but it is far from being this easy.  Here I will discuss some of the reasons why or techniques used.
+
+- Much More Complex Code - While swapping paths may be just as easy, the code could be more complex.  The analysis of the value will most likely be much more then 2 instructions with multiple paths.  There could be misleading symbols (what you may know as function names) if any at all.  It may require that you have a valid value to trace the path to make a crack. 
+
+- Needed Correct Values - If complex code to the desired path doesn't trip you up, maybe a valid value is needed to go through an algorithm to derive some data structure and if you allow it to take the correct path without a valid value, it will cause the program to create a foreign data structure causing incorrect execution behavior.  To get by this you would need to analyze the checking algorithm and derive a valid value.
+
+- Online Verification - You may be able to get reverse the algorithm to a correct a value, but it may require that you check the value online that has a deeper checking algorithm that cuts what the software may deem correct down to a fewer number.  A good example of this is Blizzard Entertainment's games such as WarCraft 3 and Diablo II.  There is no method of finding a valid value through cracking with this.
+
+- Event/Runtime Loops - Complex software runs on an event or runtime loop that samples input very little and spends most of the time allowing other programs to use the CPU.  Thus for a windowed application in particular, we can't just break when it is waiting for input.  For that we would need to know how the API attaches the evaluation function to the windowing system which is publicly available in the Cocoa and Carbon or any other windowing systems' API documentation.
